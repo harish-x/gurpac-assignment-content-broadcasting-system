@@ -120,6 +120,16 @@ npm start        # run compiled build
 ---
 
 
+## API Reference
+
+Full API documentation is available in two formats:
+
+- **OpenAPI spec** — [`openapi.yaml`](openapi.yaml) — import into [Swagger UI](https://swagger.io/tools/swagger-ui/), Stoplight, or any OpenAPI-compatible viewer for interactive docs.
+- **Postman collection** — [`Content Broadcasting System.postman_collection.json`](Content%20Broadcasting%20System.postman_collection.json) — import into Postman to get all endpoints with example request bodies and saved responses ready to run.
+
+---
+
+
 ## Database Schema
 
 ```
@@ -149,4 +159,6 @@ This implementation has a few known limitations that would need to be addressed 
 - **No pagination on slots** — The `GET /api/slots` endpoint currently returns all slots in a single response. This works fine for smaller datasets but would need pagination as the data grows.
 
 - **Unauthenticated broadcast endpoint** — The `GET /api/schedule/active` endpoint is intentionally public since display devices don’t handle authentication. However, this also means it’s openly accessible, so in a production setup, it should be restricted using network-level controls.
+
+
 
