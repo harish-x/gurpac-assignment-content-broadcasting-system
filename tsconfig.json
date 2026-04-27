@@ -1,0 +1,26 @@
+{
+  "extends": "@tsconfig/node24/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "typeRoots": ["./node_modules/@types", "./src/types"],
+    "allowJs": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": "./",
+    "paths": {
+      "@src/*": ["src/*"],
+      "@config/*": ["src/config/*"],
+      "@routes/*": ["src/routes/*"],
+      "@models/*": ["src/models/*"],
+      "@middlewares/*": ["src/middlewares/*"],
+      "@utils/*": ["src/utils/*"],
+      "@controllers/*": ["src/controllers/*"],
+      "@services/*": ["src/services/*"],
+      "@validators/*": ["src/validators/*"]
+    }
+  },
+  "include": ["src/**/*", "src/migration"],
+  "files": ["src/types/express.d.ts"],
+  "exclude": ["node_modules", "public", "dist"]
+}

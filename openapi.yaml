@@ -1,0 +1,1253 @@
+openapi: 3.0.3
+
+info:
+  title: Content Broadcasting System API
+  description: >
+    REST API for managing and broadcasting digital content across display
+    devices in an educational institution. Teachers upload content; a principal
+    reviews, approves, and schedules it into display slots.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration, login, token refresh, logout
+  - name: Content
+    description: Teacher upload and principal review workflows
+  - name: Slots
+    description: Principal management of display slots
+  - name: Schedule
+    description: Principal scheduling of approved content; public broadcast endpoint
+
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token (15 min default) returned on login/refresh.
+
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: x-xsrf
+      description: >
+        Double-submit CSRF token. Must match the value of the `XSRF-TOKEN`
+        cookie set at login/register. Required on all state-changing requests
+        (every POST, PATCH, and DELETE that requires authentication).
+        Public endpoints and GET requests are exempt.
+
+
+  schemas:
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 120
+          example: Jane Teacher
+        email:
+          type: string
+          format: email
+          example: jane@school.edu
+        password:
+          type: string
+          minLength: 6
+          maxLength: 100
+          example: Secret123!
+        role:
+          type: string
+          enum: [teacher]
+          description: Only "teacher" is accepted. Principal accounts are created via the seed script.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: jane@school.edu
+        password:
+          type: string
+          minLength: 1
+          example: Secret123!
+
+    PublicUser:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Jane Teacher
+        email:
+          type: string
+          format: email
+          example: jane@school.edu
+        role:
+          type: string
+          enum: [teacher, principal]
+        created_at:
+          type: string
+          format: date-time
+
+    AuthBundle:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        user:
+          $ref: '#/components/schemas/PublicUser'
+        accessToken:
+          type: string
+          description: JWT access token (include in Authorization header for subsequent requests).
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        csrfToken:
+          type: string
+          description: >
+            Must be sent as the x-xsrf header on refresh and logout requests.
+            Also set as the XSRF-TOKEN cookie automatically.
+          example: abc123def456
+
+    ContentDto:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 7
+        title:
+          type: string
+          example: Morning Maths Slide
+        description:
+          type: string
+          nullable: true
+          example: Slide for 8 AM maths period
+        subject:
+          type: string
+          example: mathematics
+        file_path:
+          type: string
+          description: Internal S3 object key. Use file_url for direct access.
+          example: content/2025/01/uuid.jpg
+        file_type:
+          type: string
+          example: image/jpeg
+        file_size:
+          type: integer
+          description: File size in bytes.
+          example: 204800
+        uploaded_by:
+          type: integer
+          example: 3
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+          example: pending
+        rejection_reason:
+          type: string
+          nullable: true
+          example: Image resolution too low
+        approved_by:
+          type: integer
+          nullable: true
+          example: 1
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        start_time:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-06-01T08:00:00Z"
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-06-30T17:00:00Z"
+        rotation_duration_minutes:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1440
+          example: 10
+        created_at:
+          type: string
+          format: date-time
+        file_url:
+          type: string
+          description: Pre-signed S3 GET URL, valid for 1 hour.
+          example: "https://bucket.s3.region.amazonaws.com/content/2025/01/uuid.jpg?X-Amz-Signature=..."
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        pages:
+          type: integer
+          example: 3
+
+    PaginatedContent:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentDto'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SlotDto:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 2
+        subject:
+          type: string
+          example: mathematics
+        created_at:
+          type: string
+          format: date-time
+
+    ScheduleEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 3
+        content_id:
+          type: integer
+          example: 7
+        slot_id:
+          type: integer
+          example: 2
+        rotation_order:
+          type: integer
+          minimum: 0
+          example: 0
+        duration_minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          example: 10
+        created_at:
+          type: string
+          format: date-time
+
+    ScheduleWithContentDto:
+      allOf:
+        - $ref: '#/components/schemas/ScheduleEntry'
+        - type: object
+          properties:
+            title:
+              type: string
+              example: Morning Maths Slide
+            subject:
+              type: string
+              example: mathematics
+            file_path:
+              type: string
+              example: content/2025/01/uuid.jpg
+            file_type:
+              type: string
+              example: image/jpeg
+            status:
+              type: string
+              enum: [approved]
+            start_time:
+              type: string
+              format: date-time
+              nullable: true
+            end_time:
+              type: string
+              format: date-time
+              nullable: true
+            rotation_duration_minutes:
+              type: integer
+              nullable: true
+            file_url:
+              type: string
+              description: Pre-signed S3 GET URL, valid for 1 hour.
+              example: "https://bucket.s3.region.amazonaws.com/content/...?X-Amz-Signature=..."
+
+    LiveTeacherResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          description: Present only when no live content is available.
+          example: No content available
+        teacher:
+          type: object
+          nullable: true
+          description: Absent when the teacher ID is not found or not a teacher role.
+          properties:
+            id:
+              type: integer
+              example: 3
+            name:
+              type: string
+              example: Jane Teacher
+        live:
+          type: object
+          description: >
+            Keys are subject names (lowercase). Each value is the single
+            ContentDto item currently active in that subject's rotation.
+            Empty object when no content is live.
+          additionalProperties:
+            $ref: '#/components/schemas/ContentDto'
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: Human-readable error description
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Authentication required
+
+    Forbidden:
+      description: Authenticated but insufficient role.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Forbidden: insufficient permissions"
+
+    NotFound:
+      description: Requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Content not found
+
+    BadRequest:
+      description: Validation error or malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "title: Required; subject: Required"
+
+    Conflict:
+      description: Resource already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Slot for subject "mathematics" already exists
+
+
+paths:
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a teacher account
+      description: >
+        Creates a new teacher account. The `role` field only accepts `"teacher"`.
+        Principal accounts cannot be created through this endpoint; they are
+        provisioned via `npm run seed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created. Returns auth bundle with access token and sets cookie.
+          headers:
+            Set-Cookie:
+              description: >
+                Two cookies are set: `refresh_token` (HttpOnly, SameSite=Strict,
+                scoped to /api/auth) and `XSRF-TOKEN` (readable by JS, used for CSRF).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthBundle'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      description: Authenticates a user and returns an access token plus sets refresh and CSRF cookies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful.
+          headers:
+            Set-Cookie:
+              description: Sets `refresh_token` and `XSRF-TOKEN` cookies.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthBundle'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid email or password.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: Invalid email or password
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: >
+        Issues a new access token using the `refresh_token` HttpOnly cookie.
+        Implements refresh token rotation — the old token is revoked and a new
+        one is issued. Reuse of an already-revoked token revokes the entire
+        token family.
+      security:
+        - csrfHeader: []
+      parameters:
+        - in: cookie
+          name: refresh_token
+          required: true
+          schema:
+            type: string
+          description: HttpOnly refresh token cookie set at login.
+      responses:
+        '200':
+          description: New access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthBundle'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      description: Revokes the current refresh token and clears auth cookies.
+      security:
+        - csrfHeader: []
+      parameters:
+        - in: cookie
+          name: refresh_token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Logged out successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  user:
+                    $ref: '#/components/schemas/PublicUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /content:
+    post:
+      tags: [Content]
+      summary: Upload content (teacher)
+      description: >
+        Uploads an image file to S3 and creates a content record with status
+        `pending`. Only teachers can upload. The file is validated by MIME type
+        (jpg/png/gif) and size (max 10 MB).
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, title, subject]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 'Image file. Allowed types: image/jpeg, image/png, image/gif. Max 10 MB.'
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  example: Morning Maths Slide
+                subject:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+                  example: mathematics
+                description:
+                  type: string
+                  maxLength: 2000
+                  nullable: true
+                  example: Used during the 8 AM period
+                start_time:
+                  type: string
+                  format: date-time
+                  description: ISO 8601. Content is only active on or after this time.
+                  example: "2025-06-01T08:00:00Z"
+                end_time:
+                  type: string
+                  format: date-time
+                  description: ISO 8601. Must be after start_time. Content stops being active after this time.
+                  example: "2025-06-30T17:00:00Z"
+                rotation_duration_minutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 1440
+                  description: Suggested display duration per rotation cycle.
+                  example: 10
+      responses:
+        '201':
+          description: Content uploaded and record created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  content:
+                    $ref: '#/components/schemas/ContentDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    get:
+      tags: [Content]
+      summary: List all content (principal)
+      description: Returns a paginated list of all content across all teachers, with optional filters.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+          description: Filter by approval status.
+        - in: query
+          name: subject
+          schema:
+            type: string
+            maxLength: 80
+          description: Filter by subject (case-insensitive).
+        - in: query
+          name: uploaded_by
+          schema:
+            type: integer
+          description: Filter by teacher user ID.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated content list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /content/mine:
+    get:
+      tags: [Content]
+      summary: List own uploads (teacher)
+      description: Returns a paginated list of content uploaded by the authenticated teacher.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+          description: Filter by approval status.
+        - in: query
+          name: subject
+          schema:
+            type: string
+            maxLength: 80
+          description: Filter by subject (case-insensitive).
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated content list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /content/live/{teacherId}:
+    get:
+      tags: [Content]
+      summary: Get live content for a teacher (public)
+      description: >
+        Public endpoint — no authentication required. Returns the single
+        currently-active content item per subject for the given teacher,
+        applying time-window filtering and deterministic round-robin rotation.
+
+
+        **Eligibility rules** — a content item is live when:
+
+          - `status = approved`
+
+          - both `start_time` and `end_time` are set (content without a time
+            window is never shown)
+
+          - `NOW()` falls within `[start_time, end_time]`
+
+
+        **Rotation algorithm** — for each subject the eligible items are ordered
+        by `id ASC`. A deterministic position is computed as:
+
+          ```
+          totalCycle = Σ rotation_duration_minutes  (default 5 per item)
+          position   = floor(Unix time in minutes) % totalCycle
+          ```
+
+        The item whose duration bracket contains `position` is returned.
+        The cycle loops continuously with no shared state, so any server
+        replica returns the same answer for the same clock value.
+
+
+        **Edge cases** — all return HTTP 200 with an empty `live` object and
+        `message: "No content available"` rather than a 4xx:
+
+          - unknown or non-teacher `teacherId`
+
+          - no approved content for that teacher
+
+          - approved content exists but is outside its time window
+
+          - invalid (non-integer) `teacherId`
+      parameters:
+        - in: path
+          name: teacherId
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          description: Numeric ID of the teacher whose live content to fetch.
+          example: 3
+      responses:
+        '200':
+          description: >
+            Live content by subject. An empty `live` object (with optional
+            `message`) means nothing is currently active — this is never a
+            4xx error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveTeacherResponse'
+              examples:
+                withContent:
+                  summary: Teacher has active content in two subjects
+                  value:
+                    success: true
+                    teacher:
+                      id: 3
+                      name: Jane Teacher
+                    live:
+                      mathematics:
+                        id: 7
+                        title: Morning Maths Slide
+                        description: Used during the 8 AM period
+                        subject: mathematics
+                        file_path: content/2025/06/uuid.jpg
+                        file_type: image/jpeg
+                        file_size: 204800
+                        uploaded_by: 3
+                        status: approved
+                        rejection_reason: null
+                        approved_by: 1
+                        approved_at: "2025-06-01T07:55:00Z"
+                        start_time: "2025-06-01T08:00:00Z"
+                        end_time: "2025-06-30T17:00:00Z"
+                        rotation_duration_minutes: 10
+                        created_at: "2025-05-28T10:00:00Z"
+                        file_url: "https://bucket.s3.region.amazonaws.com/content/2025/06/uuid.jpg?X-Amz-Signature=..."
+                      science:
+                        id: 12
+                        title: Cell Biology Diagram
+                        description: null
+                        subject: science
+                        file_path: content/2025/06/uuid2.png
+                        file_type: image/png
+                        file_size: 512000
+                        uploaded_by: 3
+                        status: approved
+                        rejection_reason: null
+                        approved_by: 1
+                        approved_at: "2025-06-02T09:00:00Z"
+                        start_time: "2025-06-02T09:00:00Z"
+                        end_time: "2025-06-30T17:00:00Z"
+                        rotation_duration_minutes: 5
+                        created_at: "2025-05-29T11:00:00Z"
+                        file_url: "https://bucket.s3.region.amazonaws.com/content/2025/06/uuid2.png?X-Amz-Signature=..."
+                noContent:
+                  summary: No active content available
+                  value:
+                    success: true
+                    message: No content available
+                    live: {}
+
+  /content/{id}/approve:
+    patch:
+      tags: [Content]
+      summary: Approve content (principal)
+      description: >
+        Sets content status to `approved`. Only principals can call this.
+        Approved content can be scheduled for display.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Content ID.
+      responses:
+        '200':
+          description: Content approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  content:
+                    $ref: '#/components/schemas/ContentDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /content/{id}/reject:
+    patch:
+      tags: [Content]
+      summary: Reject content (principal)
+      description: >
+        Sets content status to `rejected` with a mandatory reason.
+        Rejected content cannot be scheduled.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Content ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rejection_reason]
+              properties:
+                rejection_reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  example: Image resolution too low for display screens
+      responses:
+        '200':
+          description: Content rejected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  content:
+                    $ref: '#/components/schemas/ContentDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /slots:
+    get:
+      tags: [Slots]
+      summary: List all slots (principal)
+      description: Returns all content display slots ordered by subject name.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of slots.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  slots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SlotDto'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Slots]
+      summary: Create a slot (principal)
+      description: >
+        Creates a new display slot for the given subject. Subject is normalised
+        to lowercase. Duplicate subjects return 409.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject]
+              properties:
+                subject:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+                  example: mathematics
+      responses:
+        '201':
+          description: Slot created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  slot:
+                    $ref: '#/components/schemas/SlotDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /slots/{id}:
+    delete:
+      tags: [Slots]
+      summary: Delete a slot (principal)
+      description: >
+        Deletes a display slot. All associated schedule entries are removed
+        automatically via CASCADE.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Slot ID.
+      responses:
+        '200':
+          description: Slot deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedule/active:
+    get:
+      tags: [Schedule]
+      summary: Get currently active content (public)
+      description: >
+        Returns the **single currently-active content item per slot**, determined
+        by a stateless clock-based rotation. No authentication required — intended
+        for display devices (kiosks, TVs) that poll this endpoint to know what to
+        show right now.
+
+
+        **Rotation algorithm** — for each slot the scheduled items are walked in
+        `rotation_order ASC`. The active item is determined by:
+
+          ```
+          totalCycle = Σ duration_minutes across all items in the slot
+          position   = floor(Unix time in minutes) % totalCycle
+          ```
+
+        The item whose `duration_minutes` bracket contains `position` is
+        returned. The cycle loops continuously with no shared state.
+
+
+        **Eligibility** — an item is included in the pool only when:
+
+          - `status = approved`
+
+          - both `start_time` and `end_time` are set on the content row
+
+          - `NOW()` falls within `[start_time, end_time]`
+
+
+        Each `file_url` is a pre-signed S3 URL valid for 1 hour; devices must
+        re-poll before expiry to refresh it.
+      responses:
+        '200':
+          description: >
+            Currently active content keyed by slot ID. A slot key is absent
+            when none of its items are within their time window.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  activeContent:
+                    type: object
+                    description: >
+                      Keys are slot IDs (as strings). Each value is the single
+                      ScheduleWithContentDto item currently active in that
+                      slot's rotation — not an array.
+                    additionalProperties:
+                      $ref: '#/components/schemas/ScheduleWithContentDto'
+              example:
+                success: true
+                activeContent:
+                  "2":
+                    id: 3
+                    content_id: 7
+                    slot_id: 2
+                    rotation_order: 0
+                    duration_minutes: 10
+                    title: Morning Maths Slide
+                    subject: mathematics
+                    file_type: image/jpeg
+                    status: approved
+                    start_time: "2025-06-01T08:00:00Z"
+                    end_time: "2025-06-30T17:00:00Z"
+                    rotation_duration_minutes: 10
+                    file_url: "https://bucket.s3.region.amazonaws.com/content/...?X-Amz-Signature=..."
+                  "3":
+                    id: 5
+                    content_id: 12
+                    slot_id: 3
+                    rotation_order: 1
+                    duration_minutes: 5
+                    title: Cell Biology Diagram
+                    subject: science
+                    file_type: image/png
+                    status: approved
+                    start_time: "2025-06-02T09:00:00Z"
+                    end_time: "2025-06-30T17:00:00Z"
+                    rotation_duration_minutes: 5
+                    file_url: "https://bucket.s3.region.amazonaws.com/content/...?X-Amz-Signature=..."
+
+  /schedule:
+    post:
+      tags: [Schedule]
+      summary: Assign content to a slot (principal)
+      description: >
+        Assigns an approved content item to a display slot with a rotation
+        order and duration. If the content item is already scheduled (in any
+        slot), the existing entry is updated (upsert). Only approved content
+        can be scheduled.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content_id, slot_id]
+              properties:
+                content_id:
+                  type: integer
+                  minimum: 1
+                  example: 7
+                slot_id:
+                  type: integer
+                  minimum: 1
+                  example: 2
+                rotation_order:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                  description: Display order within the slot. Lower numbers shown first.
+                  example: 0
+                duration_minutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 1440
+                  default: 5
+                  description: How many minutes this item occupies in the rotation.
+                  example: 10
+      responses:
+        '201':
+          description: Schedule entry created or updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  schedule:
+                    $ref: '#/components/schemas/ScheduleEntry'
+        '400':
+          description: Validation error or content not approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                notApproved:
+                  summary: Content not yet approved
+                  value:
+                    success: false
+                    message: Only approved content can be scheduled
+                validation:
+                  summary: Missing field
+                  value:
+                    success: false
+                    message: "content_id: Required"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedule/{contentId}:
+    delete:
+      tags: [Schedule]
+      summary: Remove content from schedule (principal)
+      description: Removes the schedule entry for the given content item.
+      security:
+        - bearerAuth: []
+          csrfHeader: []
+      parameters:
+        - in: path
+          name: contentId
+          required: true
+          schema:
+            type: integer
+          description: ID of the content item to unschedule.
+      responses:
+        '200':
+          description: Schedule entry removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedule/slot/{slotId}:
+    get:
+      tags: [Schedule]
+      summary: View schedule for a slot (principal)
+      description: Returns all content assigned to the given slot, ordered by rotation_order ascending.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: slotId
+          required: true
+          schema:
+            type: integer
+          description: Slot ID.
+      responses:
+        '200':
+          description: Slot and its scheduled content items.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  slot:
+                    $ref: '#/components/schemas/SlotDto'
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScheduleWithContentDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'

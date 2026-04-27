@@ -1,0 +1,171 @@
+Content Broadcasting System — Architecture Notes
+================================================
+
+1. Authentication & RBAC Flow
+------------------------------
+JWT-based authentication with two token types:
+- Access token (15 min TTL): stateless bearer token carrying {sub, role, email}.
+- Refresh token (7 day TTL): stored in an httpOnly, SameSite=Strict cookie; its
+  SHA-256 hash is persisted in the refresh_tokens table for server-side revocation.
+
+Token family tracking prevents refresh token reuse: each token records its parent
+and a shared family_id. If a previously-revoked token is replayed, the entire
+family is revoked immediately (detecting token theft).
+
+RBAC is enforced via the requireRole(role) middleware applied at the route level.
+Two roles exist: 'teacher' and 'principal'. Their permissions are strictly separated:
+- Teacher: register, upload content, view own uploads and their status.
+- Principal: view all content, approve/reject, manage slots, assign schedule.
+
+CSRF protection (double-submit cookie pattern) is applied to token-rotating
+endpoints (/refresh, /logout) to prevent cross-site request forgery.
+
+
+2. Subject-based System Design
+--------------------------------
+Each piece of content belongs to a subject (e.g., "maths", "science"). Subjects
+are stored as free-text on the content row (lowercased for consistency) rather
+than as a foreign key, keeping teacher uploads flexible.
+
+Content slots (content_slots table) represent named broadcast channels by subject.
+The principal creates slots and assigns approved content to them with a
+rotation_order and duration_minutes. This is the principal-controlled scheduling
+layer.
+
+The teacher-controlled scheduling layer lives directly on the content row:
+start_time, end_time, and rotation_duration_minutes. A piece of content is only
+"live" when NOW() falls within its [start_time, end_time] window.
+
+
+3. Upload Handling Approach
+-----------------------------
+Files are received in-memory by Multer (no temp disk writes) and immediately
+streamed to AWS S3. The S3 key format is: content/YYYY/MM/<uuid>.<ext>
+
+MIME type validation is enforced at both the Multer filter (fast-fail before
+buffering the body) and again in the service layer. Max size: 10 MB.
+
+If the DB insert fails after the S3 upload succeeds, the orphaned S3 object is
+deleted asynchronously to avoid storage leaks.
+
+File URLs are generated as pre-signed S3 URLs (1-hour TTL) at query time so
+no permanent public access is needed on the bucket. Display devices must
+re-request the live endpoint periodically to refresh URLs.
+
+
+4. Approval Workflow Design
+-----------------------------
+Content lifecycle: pending → approved | rejected.
+
+Only content in 'pending' status can be acted on (idempotent update guards are
+handled at the DB UPDATE level — approving already-approved content is a no-op
+if re-triggered). Rejection stores the reason in rejection_reason so the teacher
+can see it via GET /api/content/mine.
+
+Only approved content can be assigned to a schedule slot. The service layer
+enforces this before inserting into content_schedule.
+
+
+5. Scheduling & Rotation Logic
+---------------------------------
+Two independent scheduling mechanisms exist:
+
+A) Teacher time-window scheduling (on content rows):
+   Each content item has optional start_time and end_time. Content is only
+   "eligible" when status='approved' AND start_time IS NOT NULL AND end_time IS
+   NOT NULL AND NOW() BETWEEN start_time AND end_time. Without a time window,
+   content is never shown — this is intentional and matches the assignment spec.
+
+B) Subject rotation for the public live endpoint (GET /api/content/live/:teacherId):
+   All eligible content for a teacher is fetched and grouped by subject. Within
+   each subject group (ordered by id ASC for stable sequencing), a deterministic
+   round-robin rotation is computed using the current server clock:
+
+     totalCycle = sum of each item's rotation_duration_minutes (default 5 min)
+     position   = floor(Date.now() / 60_000) % totalCycle
+     Walk items in order, subtracting each duration until position is exhausted.
+     The item whose duration bracket contains `position` is currently active.
+
+   This is stateless — any server replica produces the same answer for the same
+   clock value, making it horizontally scalable without shared state.
+
+C) Principal slot scheduling (content_schedule table):
+   The principal assigns approved content to display slots with an explicit
+   rotation_order and duration_minutes. GET /api/schedule/active returns all
+   currently active content grouped by slot for display devices (e.g., TVs/kiosks).
+   The same time-window eligibility rule applies here.
+
+Edge cases handled:
+- No approved content for teacher → { message: "No content available", live: {} }
+- Approved but outside time window → excluded from results (same empty response)
+- Invalid/non-existent teacherId → same empty response (no 404 exposed publicly)
+- Subject with no live content → that subject key is simply absent from live{}
+
+
+6. Database Design Decisions
+------------------------------
+- users: single table for both roles; role column enforced with a CHECK constraint.
+- content: denormalised subject string (not FK) to keep teacher uploads simple and
+  avoid requiring the principal to pre-create every subject.
+- content_slots: principal-managed named channels; UNIQUE on subject prevents
+  duplicate slots.
+- content_schedule: UNIQUE(content_id) enforces one-slot-per-content; ON CONFLICT
+  DO UPDATE makes re-assignment idempotent.
+- refresh_tokens: family_id + parent_id chain enables full family revocation on
+  reuse detection. Expired tokens are kept for audit; cleanup can be a cron job.
+
+Indexes:
+- (uploaded_by, status) — teacher "my uploads" filtered queries.
+- (subject, status)     — subject-based broadcast queries.
+- (status, start_time, end_time) — active-window queries.
+- (slot_id, rotation_order) — ordered slot listing.
+
+
+7. Folder Structure
+---------------------
+src/
+  config/       — db pool, S3 client, env/secrets loader
+  controllers/  — thin HTTP layer: parse request, call service, send response
+  services/     — all business logic (validation, orchestration, rotation)
+  models/       — raw SQL queries only; no business logic
+  middlewares/  — auth (JWT+RBAC), upload (Multer), validate (Zod), CSRF, errors
+  routes/       — Express routers wiring URLs to controllers + middleware chains
+  validators/   — Zod schemas used for request body/query validation
+  types/        — shared TypeScript interfaces (ContentRow, User, etc.)
+  utils/        — JWT helpers, bcrypt, S3 helpers, logger, cookie utils
+  migrations/   — sequential SQL migration files + runner + seed
+
+
+8. Middleware Usage
+---------------------
+Request pipeline (in order):
+  Helmet → CORS → cache-control headers → HPP → cookie-parser → Morgan logging
+  → router → 404 handler → global error handler
+
+Per-route middleware:
+  requireAuth  — verifies Bearer access token, attaches req.user
+  requireRole  — checks req.user.role against allowed roles
+  validateBody / validateQuery — Zod parse; rejects with 422 on failure
+  uploadSingle — Multer memory storage with MIME + size filtering
+  CSRF check   — double-submit cookie validation on token-rotating endpoints
+
+
+9. Scalability Approach
+-------------------------
+Current (MVP):
+- Stateless JWT access tokens → horizontal scaling with no session store.
+- Deterministic rotation algorithm → no shared cache needed for rotation state.
+- Connection pooling (pg pool, max 10) via Neon serverless Postgres.
+
+Future improvements (bonus):
+- Redis cache for GET /api/content/live/:teacherId with a short TTL (e.g., 30s)
+  to absorb read spikes during class broadcast periods. Invalidate on
+  approve/reject/schedule changes.
+- Rate limiting (e.g., express-rate-limit or an API gateway rule) on the public
+  live endpoint to prevent abuse — especially important since it requires no auth.
+- A background worker / cron job to purge expired refresh tokens and orphaned
+  S3 objects from rejected content.
+- Subject-wise analytics: a content_views table recording hits to the live
+  endpoint per subject/teacher, enabling "most active subject" reports.
+- CDN in front of S3 for file delivery, eliminating per-request signed URL
+  generation and improving global latency.
